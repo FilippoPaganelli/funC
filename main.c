@@ -13,7 +13,6 @@ typedef struct
 {
     uint8_t *data;
     size_t size;
-    size_t capacity;
 } Buffer;
 
 void read_bytes(FILE *file, void *buffer, size_t buffer_size)
@@ -46,57 +45,50 @@ void reverse_bytes(void *_buffer, size_t buffer_size)
     }
 }
 
-bool found_data_chunk_and_read(FILE *file, uint8_t *type, uint8_t *data, uint32_t data_size)
+void skip_data(FILE *file, uint32_t size)
 {
-    printf("  INFO: READ\n");
-
-    bool found_data_chunk = false;
-    read_bytes(file, &data, data_size); // TODO: maybe reverse bytes?
-
-    // printf("  INFO: READ %.*s\n", 4, type);
-    if (*(uint32_t *)type == IHDR)
+    if (fseek(file, size, SEEK_CUR) < 0)
     {
-        reverse_bytes(&data, data_size);
-
-        uint32_t width, height = 0;
-        memcpy(&width, data + 9, sizeof(width));
-        memcpy(&height, data + 5, sizeof(height));
-        printf("  INFO: width:%u height:%u\n", width, height);
-
-        uint8_t bit_depth, color_type, compr_met, filter_met, interl_met = 0;
-        memcpy(&bit_depth, data + 4, sizeof(uint8_t));
-        memcpy(&color_type, data + 3, sizeof(uint8_t));
-        memcpy(&compr_met, data + 2, sizeof(uint8_t));
-        memcpy(&filter_met, data + 1, sizeof(uint8_t));
-        memcpy(&interl_met, data, sizeof(uint8_t));
-        printf("  INFO: bit depth:%u, color type:%u, compr method:%u, filter method:%u, interl method:%u\n", bit_depth, color_type, compr_met, filter_met, interl_met);
-    }
-    else if (*(uint32_t *)type == IDAT)
-    {
-        found_data_chunk = true;
-    }
-    else
-    {
-        // Skip chunk data
-        if (fseek(file, data_size, SEEK_CUR) < 0)
-        {
-            printf("ERROR: Could not skip chunk data for %.*s\n", 4, type);
-            exit(1);
-        }
-        printf("  INFO: Skipping chunk\n");
-    }
-
-    // Always skip chunk CRC
-    if (fseek(file, sizeof(uint32_t), SEEK_CUR) < 0)
-    {
-        printf("ERROR: Could not skip chunk CRC for %.*s\n", 4, type);
+        printf("ERROR: Could not skip chunk data.\n");
         exit(1);
     }
-    printf("DONE READING\n");
-
-    return found_data_chunk;
 }
 
+void skip_CRC(FILE *file)
+{
+    if (fseek(file, sizeof(uint32_t), SEEK_CUR) < 0)
+    {
+        printf("ERROR: Could not skip chunk CRC\n");
+        exit(1);
+    }
+}
+
+void handle_IHDR_chunk(FILE *file, uint8_t *data)
+{
+    read_bytes(file, data, 13);
+    reverse_bytes(data, 13);
+
+    uint32_t width, height = 0;
+    memcpy(&width, data + 9, sizeof(width));
+    memcpy(&height, data + 5, sizeof(height));
+    printf("  INFO: width:%u height:%u\n", width, height);
+
+    uint8_t bit_depth, color_type, compr_met, filter_met, interl_met = 0;
+    memcpy(&bit_depth, data + 4, sizeof(uint8_t));
+    memcpy(&color_type, data + 3, sizeof(uint8_t));
+    memcpy(&compr_met, data + 2, sizeof(uint8_t));
+    memcpy(&filter_met, data + 1, sizeof(uint8_t));
+    memcpy(&interl_met, data, sizeof(uint8_t));
+    printf("  INFO: bit depth:%u, color type:%u, compr method:%u, filter method:%u, interl method:%u\n", bit_depth, color_type, compr_met, filter_met, interl_met);
+}
+
+void handle_IDAT_chunk(FILE *file, uint8_t *data, uint32_t data_size)
+{
+    read_bytes(file, data, data_size);
+    printf("  INFO: Read %u bytes from an IDAT chunk\n", data_size);
+}
+
+/* ---------- MAIN ---------- */
 int main(int argc, char **argv)
 {
     char *program = *argv++;
@@ -127,28 +119,56 @@ int main(int argc, char **argv)
     print_bytes(signature_bytes, sizeof(signature_bytes));
 
     // Chunks
-    bool reached_end = false;
+    bool end = false;
     Buffer buffer = {0};
-    while (!reached_end)
+    while (!end)
     {
-        uint32_t chunk_size;
-        read_bytes(input_file, &chunk_size, sizeof(chunk_size));
-        reverse_bytes(&chunk_size, sizeof(chunk_size));
-        printf("Chunk size: %u\n", chunk_size);
+        // Chunk size
+        uint32_t size;
+        read_bytes(input_file, &size, sizeof(size));
+        reverse_bytes(&size, sizeof(size));
+        printf("Chunk size: %u\n", size);
 
-        uint8_t chunk_type[4];
-        read_bytes(input_file, chunk_type, sizeof(chunk_type));
-        printf("Chunk type: %.*s (0x%08X)\n", 4, chunk_type, *(uint32_t *)chunk_type);
+        // Chunk type
+        uint8_t type[4];
+        read_bytes(input_file, type, sizeof(type));
+        printf("Chunk type: %.*s (0x%08X)\n", 4, type, *(uint32_t *)type);
 
-        uint8_t chunk_data[chunk_size];
-        bool found_data_chunk = found_data_chunk_and_read(input_file, chunk_type, chunk_data, chunk_size);
-        printf("%u\n", found_data_chunk);
-        if (found_data_chunk)
+        // Chunk data
+        if (*(uint32_t *)type == IHDR)
         {
+            uint8_t IHDR_data[13]; // always 13 bytes
+            handle_IHDR_chunk(input_file, IHDR_data);
         }
+        else if (*(uint32_t *)type == IEND)
+        {
+            skip_data(input_file, size);
+            end = true;
+        }
+        else if (*(uint32_t *)type == IDAT)
+        {
+            if (buffer.size > 0) // found more than 1 IDAT chunks
+            {
+                size_t new_size = buffer.size + size;
+                buffer.data = realloc(buffer.data, new_size);
+            }
+            buffer.data = malloc(size);
+            buffer.size = size;
+            handle_IDAT_chunk(input_file, buffer.data, size);
+            free(buffer.data);
+        }
+        else
+        {
+            skip_data(input_file, size);
+        }
+
+        // Chunk CRC
+        skip_CRC(input_file);
 
         printf("------------------------------\n");
     }
+
+    // TODO: https://netpbm.sourceforge.net/doc/ppm.html
 
     fclose(input_file);
 
