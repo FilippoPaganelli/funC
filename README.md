@@ -2,7 +2,11 @@
 
 This is a little exploration project. The goal is to have fun exploring the C language, and things you can do with it.
 
-## PNG_to_PPM
+**No** AI tools have been used to write this code, to bring back some of the pleasure of **fixing your own segmentation fault errors**.
+
+---
+
+### PNG_to_PPM
 
 A simple, incomplete converter from PNG format to PPM format. Does not apply any filter to the image before writing the RGB bytes directly in a PPM output file.
 
